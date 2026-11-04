@@ -32,7 +32,21 @@ Built by the **OIT AI Club** for our club tournament. MIT license.
                                                             └ one sandboxed process per team's tank
 ```
 
-## Quick start
+## Get the server
+
+### Option A: ready-made Proxmox image (recommended)
+
+Download `vzdump-qemu-106-2026_11_03-17_41_12.vma.zst` from the
+**[Releases page](https://github.com/FrostedAuto/robocode-tourney/releases)** (about 930 MB, SHA256 `4989098e7d92ab98…`), then on Proxmox:
+
+1. Copy it into a backup storage's dump folder (e.g. `/var/lib/vz/dump/`) and **Restore** it (tick *Unique*).
+2. VM → **Cloud-Init**: set a **User** and **Password** → *Regenerate Image* → **Start**.
+3. Console: log in with that user → `sudo robo-admin status` and `sudo robo-admin secrets`.
+
+The image contains **no users, passwords or secrets**: Cloud-Init creates your login, and the server makes its
+own secrets on first boot. Full steps: [docs/deploy-proxmox.md](docs/deploy-proxmox.md).
+
+### Option B: build from source
 
 On a fresh **Ubuntu Server 24.04** VM (4 vCPU, 8 GB RAM, 32 GB disk) with internet:
 
@@ -44,22 +58,23 @@ sudo robo-admin secrets                  # controller secret for the Robocode GU
 sudo robo-admin status
 ```
 
-Then open `http://<vm-ip>:8080/` from another PC. Four house bots (SpinBot, Crazy, Walls, Track Fire) are
-connected for a first demo. In the **Robocode GUI** (in the lab kit, or
+### Then
+
+Open `http://<vm-ip>:8080/` from another PC. Four house bots (SpinBot, Crazy, Walls, Track Fire) are
+connected for a first demo. In the **Robocode GUI** (in the lab kit on `/downloads`, or
 [Tank Royale releases](https://github.com/robocode-dev/tank-royale/releases/tag/v1.4.0)): Server → Server
 Options → remote server `ws://<vm-ip>:7654` + controller secret → Battle → Start Battle.
-
-Proxmox: see [docs/deploy-proxmox.md](docs/deploy-proxmox.md), which also covers restoring a ready-made backup.
 
 ## Documentation
 
 | | |
 |---|---|
-| [docs/deploy-proxmox.md](docs/deploy-proxmox.md) | VM size, ports, restore a backup or build from this repo, admin access |
+| [docs/deploy-proxmox.md](docs/deploy-proxmox.md) | VM size, ports, restore the image or build from this repo, admin access |
 | [docs/running-an-event.md](docs/running-an-event.md) | Event checklist, timeline, `robo-admin` commands, what to do when things break |
 | [docs/lab-pc-install.md](docs/lab-pc-install.md) | Setting up Windows lab PCs without admin rights; student instructions |
 | [docs/security.md](docs/security.md) | Sandboxing, upload checks, secrets, known limits |
 | [tests/README.md](tests/README.md) | Rehearsal script and manual checks |
+| [image/README.md](image/README.md) | How the Releases image is made (and how to make your own) |
 
 ## Secrets and accounts
 
@@ -70,12 +85,12 @@ Proxmox: see [docs/deploy-proxmox.md](docs/deploy-proxmox.md), which also covers
 | Controller secret (Robocode GUI, full battle control) | `sudo robo-admin secrets` | `sudo robo-admin rekey` |
 | Bot secret (bots joining the server; internal) | `/opt/robocode/secrets.env` (root) | `sudo robo-admin rekey` |
 | Samba `teams` password (USB fallback share `\\<vm-ip>\submissions`) | `sudo robo-admin secrets` | `sudo robo-admin rekey` |
-| Admin login (the VM's Linux user) | set at install | `passwd`; on a restored copy, `rekey` sets a new `robo` password |
+| Admin login (the VM's Linux user) | you set it: Proxmox Cloud-Init tab (image) or the Ubuntu installer (source) | `passwd` |
 | Event code (team sign-up) | you choose it: `sudo robo-admin open <CODE>` | run `open` again; `close` stops sign-up |
 | Team keys (one per team) | shown once, at sign-up or `team add` | `sudo robo-admin team rekey <team-id>` |
 
-**On any copy restored from someone else's backup, run `sudo robo-admin rekey` first.** It replaces every
-secret, so nothing from the original copy works on yours.
+The Releases image has no secrets in it; each copy makes its own on first boot. **If you restore a backup of a
+server someone else has used, run `sudo robo-admin rekey` first:** it replaces every secret.
 
 ## Ports
 
@@ -98,12 +113,13 @@ hub/hub-import.sh          root worker: imports checked uploads, starts/stops bo
 hub/robo-admin             admin menu + commands (installed to /usr/local/sbin)
 downloads/                 build-downloads.sh (lab kit from official sources, SHA256-pinned) + manifest.json
 lab-kit/                   install.cmd + README.txt for Windows lab PCs, starter bot MyBot
+image/                     prepare-image.sh: turns a fresh build into the shareable Proxmox image
 docs/, tests/              documentation, rehearsal script
 ```
 
 Installed: `/opt/robocode` (jars, venvs, bots, scripts, secrets), `/var/lib/robocode-hub` (teams, results),
 systemd units `robocode-server`, `robocode-hub`, `robocode-import.path`, `robocode-team@<Bot>`,
-`robocode-house@<Bot>`, `robocode-server-check.timer`, slice `robocode-bots.slice`.
+`robocode-house@<Bot>`, `robocode-server-check.timer`, `robocode-firstboot`, slice `robocode-bots.slice`.
 
 ## Updating
 
@@ -118,4 +134,5 @@ must all be the same version.
 
 - [Robocode Tank Royale](https://github.com/robocode-dev/tank-royale) by Flemming N. Larsen and contributors
   (Apache-2.0). The sample bots and the GUI come from its releases.
-- OIT AI Club: tournament hub, setup, lab kit and docs (MIT, see [LICENSE](LICENSE)).
+- OIT AI Club: tournament hub, setup, lab kit, image and docs (MIT, see [LICENSE](LICENSE)).
+- The image and lab kit include third-party software under its own licenses: [THIRD-PARTY.md](THIRD-PARTY.md).

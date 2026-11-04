@@ -4,7 +4,8 @@ The server runs code written by students during the event, so it treats every bo
 
 ## Secrets
 
-None are in this repository. Every install creates its own; `sudo robo-admin rekey` replaces all of them
+None are in this repository or in the Releases image. Every install (and every first boot of the image) creates
+its own; `sudo robo-admin rekey` replaces all of them
 (use it on any copy restored from someone else's backup).
 
 | Secret | Used for | Stored (root only, mode 600) |
