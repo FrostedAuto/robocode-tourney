@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Robocode Tank Royale — Live</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="live">
+<header class="bar">
+  <div class="brand"><span class="logo">◆</span> <span id="title">Robocode Tank Royale Tournament</span></div>
+  <div class="now" id="now">Waiting for the next battle</div>
+  <div class="cta" id="cta"></div>
+  <div class="dot" id="dot" title="Server connection"></div>
+</header>
+
+<main class="stage">
+  <section class="arena-wrap">
+    <canvas id="arena" width="800" height="600" aria-label="Live battle arena"></canvas>
+    <div class="overlay" id="overlay"></div>
+  </section>
+
+  <aside class="side">
+    <div class="panel">
+      <h2 id="fighters-h">In the arena</h2>
+      <ol class="fighters" id="fighters"></ol>
+    </div>
+    <div class="panel grow">
+      <h2 id="standings-h">Standings</h2>
+      <table class="standings">
+        <thead><tr><th>#</th><th>Team</th><th class="num">Score</th><th class="num">1st</th></tr></thead>
+        <tbody id="standings"></tbody>
+      </table>
+      <div id="others" class="others"></div>
+    </div>
+  </aside>
+</main>
+
+<footer class="ticker" id="ticker"></footer>
+<script src="/static/live.js"></script>
+</body>
+</html>

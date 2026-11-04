@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Robocode — Submit your bot</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="submit">
+<header class="bar">
+  <div class="brand"><span class="logo">◆</span> <span id="title">Robocode Tank Royale Tournament</span></div>
+  <div class="now"><a href="/downloads">Downloads</a> · <a href="/">Watch live →</a></div>
+</header>
+
+<main class="cards">
+  <section class="card" id="login-card">
+    <h2>Your team</h2>
+    <form id="login">
+      <label>Team key <input id="key" autocomplete="off" spellcheck="false" placeholder="ABCD-EFGH-JKMN" required></label>
+      <button>Open my team</button>
+    </form>
+    <p class="hint">An officer gives you the key, or you get one when you sign up below. Keep it to your team.</p>
+  </section>
+
+  <section class="card" id="register-card" hidden>
+    <h2>New team? Sign up</h2>
+    <form id="register">
+      <label>Team name <input id="tname" maxlength="24" required></label>
+      <label>Event code <input id="code" autocomplete="off" required></label>
+      <button>Sign up</button>
+    </form>
+    <p class="hint">The event code is on the board.</p>
+  </section>
+
+  <section class="card" id="team-card" hidden>
+    <h2 id="team-name"></h2>
+    <div class="status" id="status"></div>
+    <form id="upload">
+      <label class="drop" id="drop">
+        <input type="file" id="files" multiple accept=".py,.json,.zip,.txt,.md">
+        <span id="drop-text">Choose your bot's <b>.py</b> and <b>.json</b> files<br>(or a <b>.zip</b> of the bot folder)</span>
+      </label>
+      <button id="send">Upload bot</button>
+    </form>
+    <p class="hint">Your bot needs <code>MyBot.py</code> + <code>MyBot.json</code> with the same name as the class
+      <code>class MyBot(Bot)</code>. Uploading again replaces your bot. The name shown in the arena is your team name.</p>
+    <button class="link" id="logout">Not your team? Log out</button>
+  </section>
+
+  <div class="msg" id="msg" role="status"></div>
+</main>
+<script src="/static/submit.js"></script>
+</body>
+</html>

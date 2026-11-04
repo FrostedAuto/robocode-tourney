@@ -1,0 +1,232 @@
+#!/usr/bin/env bash
+# robo-admin - event-night control for the Robocode tournament VM (installed by setup.sh step 11).
+# Run as root (sudo robo-admin). No arguments = menu. Talks to robocode-hub over its admin socket.
+set -uo pipefail
+
+SOCK=/run/robocode-hub/admin.sock
+HOUSE_DEFAULT=(SpinBot Crazy Walls TrackFire)
+
+[ "$(id -u)" -eq 0 ] || exec sudo "$0" "$@"
+
+c_ok=$'\e[32m' c_bad=$'\e[31m' c_dim=$'\e[2m' c_b=$'\e[1m' c_0=$'\e[0m'
+die() { echo "${c_bad}$*${c_0}" >&2; exit 1; }
+
+api() {  # api GET|POST path [json]
+  local out data=()
+  [ -n "${3:-}" ] && data=(--data "$3")
+  out=$(curl -sS --unix-socket "$SOCK" -X "$1" -H 'Content-Type: application/json' \
+        "${data[@]}" "http://hub$2" 2>&1) || die "hub not reachable ($out). Try: systemctl status robocode-hub"
+  if jq -e 'type=="object" and .ok==false' <<<"$out" >/dev/null 2>&1; then die "$(jq -r .error <<<"$out")"; fi
+  printf '%s' "$out"
+}
+j() { jq -cn "$@"; }
+
+usage() {
+  cat <<'EOF'
+robo-admin                         menu
+robo-admin status                  server, hub, teams, connected bots, current battle
+robo-admin open <event-code>       open team sign-up with this code  |  close   close sign-up
+robo-admin uploads on|off          allow / block bot uploads
+robo-admin max <n>                 max number of teams (default 16)
+robo-admin title "<text>"          title on the projector     |  url <http://host:8080>  link shown for uploads
+robo-admin team add "<name>"       create a team, prints its key
+robo-admin team list | remove <id> | rekey <id> | start <id>   (start = run a watchdog-stopped bot again)
+robo-admin team import <id> <folder>   USB/Samba fallback: import /opt/robocode/submissions/<folder> for a team
+robo-admin heats [size]            split teams with a bot into heats of up to <size> (default 8)
+robo-admin final [top]             finalists = best <top> of every heat (default 2)
+robo-admin final set "A" "B" ...   pick finalists by team name   |  final clear
+robo-admin battle heat <n>|final [rounds] [tps]   start a battle without the GUI (default 5 rounds)
+robo-admin stop | pause | resume | tps <n>
+robo-admin house on|off [Bot ...]  house (sample) bots, default SpinBot Crazy Walls TrackFire
+robo-admin results                 recent battles and standings
+robo-admin exclude <battle-id>     don't count a battle  |  include <battle-id>
+robo-admin logs [server|hub|import|<Bot>]
+robo-admin restart-bots            restart every team + house bot
+robo-admin reset [--teams]         archive all results (and with --teams: delete every team)
+robo-admin secrets                 show the controller secret and the logins (root only)
+robo-admin rekey                   NEW server: new secrets, robo + Samba passwords, team keys
+EOF
+}
+
+status() {
+  local s; s=$(api GET /state)
+  printf '%-16s %s\n' "server" "$(systemctl is-active robocode-server)" "hub" "$(systemctl is-active robocode-hub)" \
+    "hub->server" "$(jq -r 'if .server_ok then "connected" else "NOT connected" end' <<<"$s")"
+  jq -r '.settings | "sign-up         \(if .reg_open then "OPEN" else "closed" end)\(if .reg_code_set then "" else " (no event code set)" end)\nuploads         \(if .uploads_open then "open" else "CLOSED" end)\nmax teams       \(.max_teams)"' <<<"$s"
+  echo
+  echo "${c_b}Teams${c_0}"
+  jq -r '.teams | to_entries | sort_by(.value.name)[] | .key as $id | .value |
+    "  \(if .connected then "\u001b[32m●\u001b[0m" elif .bot then "\u001b[33m●\u001b[0m" else "\u001b[2m○\u001b[0m" end) \(.name)  [\($id)]  bot=\(.bot // "-")\(if .pending then "  (checking upload)" else "" end)\(if .last_import and .last_import.result=="FAIL" then "  last upload FAILED" else "" end)\(if .stopped then "  \u001b[31mSTOPPED by watchdog (never connected)\u001b[0m" else "" end)"' <<<"$s"
+  jq -r 'if (.teams|length)==0 then "  (none)" else empty end' <<<"$s"
+  echo
+  echo "${c_b}Connected bots${c_0} ($(jq '.bots|length' <<<"$s")): $(jq -r '.bots|join(", ")' <<<"$s")"
+  jq -r 'if .game then "\nBattle running: \(.game.stage), round \(.game.round)/\(.game.rounds)\(if .game.paused then " (paused)" else "" end)" else "\nNo battle running." end' <<<"$s"
+  jq -r 'if (.heats|length)>0 then "\nHeats:\n" + ([.heats[] | "  \(.name): \(.teams|join(", "))"]|join("\n")) else empty end' <<<"$s"
+  jq -r 'if (.final|length)>0 then "Final: \(.final|join(", "))" else empty end' <<<"$s"
+  local failed; failed=$(systemctl list-units --failed --no-legend 'robocode-*' | awk '{print $2}' | tr '\n' ' ')
+  [ -z "$failed" ] || echo "${c_bad}Failed units: $failed${c_0}  (robo-admin logs <Bot>)"
+}
+
+results() {
+  local s; s=$(api GET /state)
+  echo "${c_b}Recent battles${c_0}"
+  jq -r '.excluded as $ex | .battles | reverse[] | "  \(.id)  \(.stage)\(if .counted then "" else " (not counted)" end)\(if (.id as $i | any($ex[]; . == $i)) then " EXCLUDED" else "" end)  winner: \(.winner // "-")"' <<<"$s"
+  echo
+  jq -r '.standings | to_entries[] | "\u001b[1mStandings: \(.key)\u001b[0m\n" + ([.value[] | "  \(.rank). \(.name)  \(.score) pts  \(.firsts) firsts  (\(.battles) battles)"] | join("\n"))' <<<"$s"
+}
+
+house() {
+  local mode=$1; shift
+  local bots=("$@"); [ ${#bots[@]} -gt 0 ] || bots=("${HOUSE_DEFAULT[@]}")
+  for b in "${bots[@]}"; do
+    [[ $b =~ ^[A-Za-z0-9_]+$ ]] || die "bad bot name: $b"
+    if [ "$mode" = on ]; then systemctl enable --now "robocode-house@$b" >/dev/null 2>&1 && echo "house bot $b on"
+    else systemctl disable --now "robocode-house@$b" >/dev/null 2>&1; echo "house bot $b off"; fi
+  done
+}
+
+logs() {
+  case "${1:-server}" in
+    server) journalctl -u robocode-server -n 60 --no-pager -f ;;
+    hub)    journalctl -u robocode-hub -n 60 --no-pager -f ;;
+    import) journalctl -u robocode-import -n 80 --no-pager ;;
+    *)      [[ $1 =~ ^[A-Za-z0-9_]+$ ]] || die "bad bot name"
+            journalctl -u "robocode-team@$1" -u "robocode-house@$1" -n 80 --no-pager ;;
+  esac
+}
+
+rekey() {
+  # New server (e.g. restored from a backup): make every secret new, so nothing from the old copy works here.
+  echo "This makes NEW: game-server secrets (controller + bot), the robo login password (if that user exists),"
+  echo "the Samba 'teams' password and every team's key. Every Robocode GUI must enter the new controller secret."
+  read -rp "Type yes to continue: " a; [ "$a" = yes ] || die "cancelled"
+  gen() { python3 -c 'import secrets,string,sys;a=string.ascii_letters+string.digits;print("".join(secrets.choice(a) for _ in range(int(sys.argv[1]))))' "$1"; }
+  local cs bs rp sp
+  cs=$(gen 24) bs=$(gen 24) rp=$(gen 20) sp=$(gen 20)
+  local has_robo=0; id robo >/dev/null 2>&1 && has_robo=1
+  ( umask 077
+    printf 'CONTROLLER_SECRET=%s\nBOT_SECRET=%s\n' "$cs" "$bs" > /opt/robocode/secrets.env
+    printf 'SERVER_URL=ws://localhost:7654\nSERVER_SECRET=%s\n' "$bs" > /opt/robocode/bots.env
+    printf 'samba user teams password: %s\n' "$sp" > /root/credentials.txt
+    [ $has_robo = 1 ] && printf 'robo login password: %s\n' "$rp" >> /root/credentials.txt )
+  chmod 600 /opt/robocode/secrets.env /opt/robocode/bots.env /root/credentials.txt
+  if [ $has_robo = 1 ]; then echo "robo:$rp" | chpasswd || die "could not set the robo password"; fi
+  printf '%s\n%s\n' "$sp" "$sp" | smbpasswd -s teams >/dev/null || die "could not set the Samba password"
+  echo "restarting the game server (up to ~90 s while old connections clear)..."
+  systemctl restart robocode-server robocode-hub
+  for _ in $(seq 1 120); do ss -Hltn 'sport = :7654' | grep -q . && break; sleep 1; done
+  sleep 3
+  cmd restart-bots >/dev/null
+  local tids; tids=$(api GET /state | jq -r '.teams | keys[]')
+  for t in $tids; do api POST /team/rekey "$(j --arg i "$t" '{id:$i}')" | jq -r '"  new key for team \(.id): \(.key)"'; done
+  echo
+  echo "${c_b}New secrets (also in /root/credentials.txt and /opt/robocode/secrets.env, root only):${c_0}"
+  [ $has_robo = 1 ] && echo "  robo login password : $rp"
+  echo "  Samba 'teams'       : $sp"
+  echo "  controller secret   : $cs     (Robocode GUI → Server Options)"
+  echo "Write them down, then clear the screen (clear)."
+}
+
+cmd() {
+  case "${1:-}" in
+    status) status ;;
+    open)   [ -n "${2:-}" ] || die "usage: robo-admin open <event-code>"
+            api POST /settings "$(j --arg c "$2" '{reg_code:$c, reg_open:true}')" >/dev/null
+            echo "sign-up OPEN with event code: $2" ;;
+    close)  api POST /settings '{"reg_open":false}' >/dev/null; echo "sign-up closed" ;;
+    uploads) case "${2:-}" in on) v=true ;; off) v=false ;; *) die "usage: robo-admin uploads on|off" ;; esac
+            api POST /settings "{\"uploads_open\":$v}" >/dev/null; echo "uploads $2" ;;
+    max)    [[ ${2:-} =~ ^[0-9]+$ ]] || die "usage: robo-admin max <n>"
+            api POST /settings "{\"max_teams\":$2}" >/dev/null; echo "max teams $2" ;;
+    title)  api POST /settings "$(j --arg t "${2:-}" '{title:$t}')" >/dev/null; echo "title set" ;;
+    url)    api POST /settings "$(j --arg t "${2:-}" '{public_url:$t}')" >/dev/null; echo "upload link set" ;;
+    team)
+      case "${2:-}" in
+        add)    r=$(api POST /team/add "$(j --arg n "${3:-}" '{name:$n}')")
+                jq -r '"team \(.name) [\(.id)]  key: \u001b[1m\(.key)\u001b[0m  (shown once)"' <<<"$r" ;;
+        list|"") status ;;
+        remove) api POST /team/remove "$(j --arg i "${3:-}" '{id:$i}')" >/dev/null; echo "removed ${3:-}" ;;
+        start)  api POST /team/start "$(j --arg i "${3:-}" '{id:$i}')" >/dev/null; echo "starting ${3:-}'s bot" ;;
+        rekey)  r=$(api POST /team/rekey "$(j --arg i "${3:-}" '{id:$i}')"); jq -r '"new key for \(.id): \u001b[1m\(.key)\u001b[0m"' <<<"$r" ;;
+        import) r=$(api POST /team/import "$(j --arg i "${3:-}" --arg f "${4:-}" '{id:$i, folder:$f}')")
+                jq -r '"queued \(.bot); check with: robo-admin status\(if (.warnings|length)>0 then "\nwarning: " + (.warnings|join(" ")) else "" end)"' <<<"$r" ;;
+        *) usage ;;
+      esac ;;
+    heats)  r=$(api POST /heats "{\"size\":${2:-8}}"); s=$(api GET /state)
+            jq -r --argjson s "$s" '(.heats[] | "\(.name): " + ([.teams[] | $s.teams[.].name] | join(", "))),
+              (if (.left_out|length)>0 then "\u001b[33mLeft out (no connected bot): \(.left_out|join(", "))\u001b[0m" else empty end)' <<<"$r" ;;
+    final)
+      case "${2:-}" in
+        set)   shift 2; r=$(api POST /final "$(jq -cn '{teams:$ARGS.positional}' --args "$@")") ;;
+        clear) r=$(api POST /final '{"clear":true}') ;;
+        *)     r=$(api POST /final "{\"top\":${2:-2}}") ;;
+      esac
+      s=$(api GET /state); jq -r --argjson s "$s" '"Final: " + ([.final[] | $s.teams[.].name] | join(", "))' <<<"$r" ;;
+    battle)
+      case "${2:-}" in
+        heat)  who="heat ${3:?usage: robo-admin battle heat <n> [rounds] [tps]}"; rounds=${4:-5}; tps=${5:-} ;;
+        final) who=final; rounds=${3:-10}; tps=${4:-} ;;
+        *)     die "usage: robo-admin battle heat <n>|final [rounds] [tps]" ;;
+      esac
+      r=$(api POST /battle "$(j --arg w "$who" --argjson r "$rounds" --arg t "$tps" '{who:$w, rounds:$r} + (if $t=="" then {} else {tps:($t|tonumber)} end)')")
+      jq -r '"started: \(.bots|join(", "))"' <<<"$r" ;;
+    stop|pause|resume) api POST "/control/$1" >/dev/null; echo "$1 sent" ;;
+    tps)    [[ ${2:-} =~ ^-?[0-9]+$ ]] || die "usage: robo-admin tps <n>  (-1 = max)"
+            api POST /control/tps "{\"tps\":$2}" >/dev/null; echo "tps $2" ;;
+    house)  [[ ${2:-} =~ ^(on|off)$ ]] || die "usage: robo-admin house on|off [Bot ...]"; m=$2; shift 2; house "$m" "$@" ;;
+    results) results ;;
+    exclude|include) api POST /exclude "$(j --arg i "${2:-}" --argjson e "$([ "$1" = exclude ] && echo true || echo false)" '{id:$i, exclude:$e}')" >/dev/null
+            echo "battle ${2:-} ${1}d" ;;
+    logs)   logs "${2:-server}" ;;
+    restart-bots) mapfile -t u < <(systemctl list-units --all --no-legend --plain 'robocode-team@*' 'robocode-house@*' | awk '$3!="inactive"{print $1}')
+            [ ${#u[@]} -eq 0 ] && { echo "no bot units"; return; }
+            systemctl reset-failed "${u[@]}" 2>/dev/null; systemctl restart "${u[@]}"; echo "restarted ${#u[@]} bots" ;;
+    reset)  read -rp "Archive all battle results${2:+ AND delete every team}? Type yes: " a; [ "$a" = yes ] || die "cancelled"
+            r=$(api POST /reset "$([ "${2:-}" = --teams ] && echo '{"teams":true}' || echo '{}')"); jq -r '"archived to \(.archive)"' <<<"$r" ;;
+    secrets) echo "Controller secret (Robocode GUI → Server Options):"
+            sed -n 's/^CONTROLLER_SECRET=/  /p' /opt/robocode/secrets.env
+            echo "Logins (/root/credentials.txt):"; sed 's/^/  /' /root/credentials.txt ;;
+    rekey)  rekey ;;
+    -h|--help|help) usage ;;
+    *) usage; exit 2 ;;
+  esac
+}
+
+menu() {
+  while true; do
+    echo
+    echo "${c_b}Robocode admin${c_0}  ${c_dim}(Ctrl+C to quit; 'robo-admin help' lists every command)${c_0}"
+    cat <<'EOF'
+  1) Status                         7) Pick finalists (top N per heat)
+  2) Open sign-up (set event code)  8) Start a battle (no GUI)
+  3) Close sign-up                  9) Stop the battle
+  4) Add a team (prints its key)   10) Results + standings
+  5) Import a USB bot for a team   11) Bot logs
+  6) Make heats                    12) Restart all bots
+                                   13) Show secrets / passwords
+                                   14) NEW server: rekey everything
+EOF
+    read -rp "Choose: " c || exit 0
+    case $c in
+      1) cmd status ;;
+      2) read -rp "Event code (write it on the board): " x; cmd open "$x" ;;
+      3) cmd close ;;
+      4) read -rp "Team name: " x; cmd team add "$x" ;;
+      5) ls /opt/robocode/submissions; read -rp "Folder: " f; cmd status | sed -n '/^Teams/,/^$/p'; read -rp "Team id: " i; cmd team import "$i" "$f" ;;
+      6) read -rp "Bots per heat [8]: " x; cmd heats "${x:-8}" ;;
+      7) read -rp "Finalists per heat [2]: " x; cmd final "${x:-2}" ;;
+      8) read -rp "heat <n> or final: " w; read -rp "Rounds [5]: " r; read -rp "TPS (blank = 30, -1 = max): " t
+         # shellcheck disable=SC2086
+         cmd battle $w ${r:-5} $t ;;
+      9) cmd stop ;;
+      10) cmd results ;;
+      11) read -rp "server / hub / import / <BotName>: " x; cmd logs "${x:-server}" ;;
+      12) cmd restart-bots ;;
+      13) cmd secrets ;;
+      14) cmd rekey ;;
+      *) echo "?" ;;
+    esac
+  done
+}
+
+[ $# -eq 0 ] && menu || cmd "$@"
